@@ -913,7 +913,7 @@ int main( int argc, char * argv[] )
     ++edgeId;
     }
 
-  size_t numSites = transforms.size();
+  int numSites = transforms.size();
   if (numSites != numWeights)
     {
     std::cerr<<"The number of transforms ("<<numSites
@@ -923,7 +923,7 @@ int main( int argc, char * argv[] )
     }
 
   std::vector<Mat24> dqs;
-  for(size_t i = 0; i < numSites; ++i)
+  for(int i = 0; i < numSites; ++i)
     {
     Mat24 dq;
     RigidTransform& trans = transforms[i];
