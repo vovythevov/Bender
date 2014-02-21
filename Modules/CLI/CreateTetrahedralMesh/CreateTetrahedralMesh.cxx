@@ -34,6 +34,8 @@
 
 // Slicer includes
 #include "itkPluginUtilities.h"
+#include "itkPluginFilterWatcher.h"
+#include "vtkPluginFilterWatcher.h"
 
 // VTK includes
 #include <vtkCleanPolyData.h>
@@ -156,6 +158,7 @@ SplitLabelMaps(typename InputImageType::Pointer image, bool verbose)
   typename RelabelFilterType::Pointer relabelFilter = RelabelFilterType::New();
   relabelFilter->SetInput( image );
   relabelFilter->Update();
+  bender::IOUtils::FilterProgress("SplitFilter", 0.3);
 
   if (verbose)
     {
@@ -179,9 +182,9 @@ SplitLabelMaps(typename InputImageType::Pointer image, bool verbose)
   skinThresholdFilter->SetOutsideValue(0);
   skinThresholdFilter->Update();
   labels.push_back(skinThresholdFilter->GetOutput());
+  bender::IOUtils::FilterProgress("SplitFilter", 0.4);
 
-  for (LabelType i = 1, end = relabelFilter->GetNumberOfObjects()+1; i < end;
-       ++i)
+  for (LabelType i = 1; i < relabelFilter->GetNumberOfObjects()+1; ++i)
     {
     typename ThresholdFilterType::Pointer organThresholdFilter =
       ThresholdFilterType::New();
@@ -193,6 +196,9 @@ SplitLabelMaps(typename InputImageType::Pointer image, bool verbose)
     organThresholdFilter->Update();
 
     labels.push_back(organThresholdFilter->GetOutput());
+
+    bender::IOUtils::FilterProgress(
+      "SplitFilter", i, 0.6/(relabelFilter->GetNumberOfObjects()), 0.4);
     }
 
   return labels;
@@ -217,7 +223,12 @@ int DoIt( int argc, char * argv[] )
   typedef itk::ImageFileReader<InputImageType> ReaderType;
   typedef itk::Image<LabelPixelType,3> LabelImageType;
 
+  //-----------------------------
+  //  Read and prepare inputs
+  //-----------------------------
   typename ReaderType::Pointer reader = ReaderType::New();
+  itk::PluginFilterWatcher watchReader(
+    reader, "Read input Image", CLPProcessInformation);
   reader->SetFileName( InputVolume );
   reader->Update();
   typename InputImageType::SpacingType spacing =
@@ -226,14 +237,24 @@ int DoIt( int argc, char * argv[] )
   typename InputImageType::DirectionType imageDirection =
     reader->GetOutput()->GetDirection();
 
+  bender::IOUtils::FilterStart(
+    "SplitFilter", "Split input image in label images");
   std::vector<typename LabelImageType::Pointer> labels =
     SplitLabelMaps<InputImageType, LabelImageType>(reader->GetOutput(), Verbose);
+  bender::IOUtils::FilterEnd("SplitFilter");
+  if (CLPProcessInformation && CLPProcessInformation->Abort)
+    {
+    std::cerr << "Abort requested." << std::endl;
+    return EXIT_FAILURE;
+    }
 
   // Constants for undesired material
   const char airMaterial = 0;
   char paddedVolumeMaterial = labels.size();
 
   // Get a map from the original labels to the new labels
+  bender::IOUtils::FilterStart(
+    "MaterialToLabel", "Get material to label correspondence");
   std::map<LabelPixelType, InputPixelType> materialToLabel;
 
   for(size_t i = 0; i < labels.size(); ++i)
@@ -251,6 +272,9 @@ int DoIt( int argc, char * argv[] )
         {
         materialToLabel[labelsIterator.Value()] = imageIterator.Value();
         assert(labelsIterator.Value() == i);
+
+        bender::IOUtils::FilterProgress(
+          "MaterialToLabel", i, 1.0/labels.size());
         break;
         }
       }
@@ -274,7 +298,20 @@ int DoIt( int argc, char * argv[] )
                 << " <=> label: " << static_cast<long>(it->second) << std::endl;
       }
     }
+  
+  bender::IOUtils::FilterEnd("MaterialToLabel");
+  if (CLPProcessInformation && CLPProcessInformation->Abort)
+    {
+    std::cerr << "Abort requested." << std::endl;
+    return EXIT_FAILURE;
+    }
 
+  //--------------------------------
+  //  Create Mesher & TetMesh
+  //--------------------------------
+
+  bender::IOUtils::FilterStart(
+    "Cleaver", "Generate tetrahedral mesh with Cleaver");
   std::vector<Cleaver::ScalarField*> labelMaps;
   for(size_t i = 0; i < labels.size(); ++i)
     {
@@ -303,10 +340,9 @@ int DoIt( int argc, char * argv[] )
     std::cout << "Creating Mesh with Volume Size "
       << cleaverVolume->size().toString() << std::endl;
     }
+  bender::IOUtils::FilterProgress("Cleaver", 0.1);
 
-  //--------------------------------
-  //  Create Mesher & TetMesh
-  //--------------------------------
+  // Run cleaver
   Cleaver::TetMesh *cleaverMesh =
     Cleaver::createMeshFromVolume(cleaverVolume, Verbose);
 
@@ -325,11 +361,20 @@ int DoIt( int argc, char * argv[] )
     return EXIT_FAILURE;
     }
 
+  bender::IOUtils::FilterEnd("Cleaver");
+  if (CLPProcessInformation && CLPProcessInformation->Abort)
+    {
+    std::cerr << "Abort requested." << std::endl;
+    return EXIT_FAILURE;
+    }
+
   //------------------
   //  Compute Angles
   //------------------
   if(Verbose)
     {
+    bender::IOUtils::FilterStart(
+      "CleaverStats", "Compute and display mesh properties");
     cleaverMesh->computeAngles();
     std::cout.precision(12);
     std::cout << "Worst Angles:" << std::endl;
@@ -337,6 +382,7 @@ int DoIt( int argc, char * argv[] )
     std::cout << "max: " << cleaverMesh->max_angle << std::endl;
     std::cout << "Verts #: " << cleaverMesh->verts.size() << std::endl;
     std::cout << "Tets #: " << cleaverMesh->tets.size() << std::endl;
+    bender::IOUtils::FilterEnd("CleaverStats");
     }
 
   //-----------------------
@@ -344,6 +390,7 @@ int DoIt( int argc, char * argv[] )
   //-----------------------
 
   // Points and cell arrays
+  bender::IOUtils::FilterStart("FillVTKArrays", "Fill VTK arrays from Cleaver");
   vtkNew<vtkPoints> points;
   points->SetNumberOfPoints(cleaverMesh->tets.size() * 4);
 
@@ -360,8 +407,12 @@ int DoIt( int argc, char * argv[] )
   brokenCells->SetPoints(points.GetPointer());
   brokenCells->SetVerbose(Verbose);
 
+  bender::IOUtils::FilterProgress("FillVTKArrays", 0.1);
+  size_t updateFrequency = cleaverMesh->tets.size() / 90;
+
   std::map<LabelPixelType, unsigned long> materialCount;
-  for(size_t i = 0; i < cleaverMesh->tets.size(); ++i)
+  for(size_t i = 0, updateCounter = 0; i < cleaverMesh->tets.size();
+    ++i, ++updateCounter)
     {
     char material = cleaverMesh->tets[i]->mat_label;
 
@@ -395,6 +446,13 @@ int DoIt( int argc, char * argv[] )
 
     meshTetras->InsertNextCell(meshTetra.GetPointer());
     cellData->InsertNextValue(materialToLabel[material]);
+
+    if (updateCounter > updateFrequency)
+      {
+      bender::IOUtils::FilterProgress(
+        "FillVTKArrays", i, 0.9, 0.1);
+      updateCounter = 0;
+      }
     }
   if (Verbose)
     {
@@ -424,6 +482,13 @@ int DoIt( int argc, char * argv[] )
   // No need for the cell fixer anymore, release the memory.
   brokenCells = NULL;
 
+  bender::IOUtils::FilterEnd("FillVTKArrays");
+  if (CLPProcessInformation && CLPProcessInformation->Abort)
+    {
+    std::cerr << "Abort requested." << std::endl;
+    return EXIT_FAILURE;
+    }
+
   //-----------------------------
   //  Create and clean polydata
   //-----------------------------
@@ -438,6 +503,8 @@ int DoIt( int argc, char * argv[] )
     std::cout << "Clean PolyData..." << std::endl;
     }
   vtkNew<vtkCleanPolyData> cleanFilter;
+  vtkPluginFilterWatcher watchClean(
+    cleanFilter.GetPointer(), "Clean tetrahedral mesh", CLPProcessInformation);
   cleanFilter->PointMergingOff(); // Prevent from creating triangles or lines
   cleanFilter->SetInput(vtkMesh);
 
@@ -506,6 +573,10 @@ int DoIt( int argc, char * argv[] )
     }
   // Actual transformation
   vtkNew<vtkTransformPolyDataFilter> transformFilter;
+  vtkPluginFilterWatcher watchTransform(
+    transformFilter.GetPointer(),
+    "Scale tetrahedral mesh to image size",
+    CLPProcessInformation);
   transformFilter->SetInput(cleanFilter->GetOutput());
   transformFilter->SetTransform(transform.GetPointer());
 
