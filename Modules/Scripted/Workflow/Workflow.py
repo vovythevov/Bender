@@ -2251,7 +2251,19 @@ class WorkflowWidget:
 
   def onSimulatePoseCLIModified(self, cliNode, event):
     if cliNode.GetStatusString() == 'Completed':
+      # Hide input
+      comboBoxesWithNodeToHide = [
+        'SimulatePoseSkinComboBox',
+        'SimulatePoseInputNodeComboBox',
+        'ExtractBoneOutputComboBox',
+        ]
+      for comboBox in comboBoxesWithNodeToHide:
+        displayNode = self.get(comboBox).currentNode().GetDisplayNode()
+        if displayNode != None:
+          displayNode.SetVisibility(False)
+
       self.applyColorNodeToPosedTetMesh()
+
     if not cliNode.IsBusy():
       self.get('SimulatePoseApplyPushButton').setChecked(False)
       self.get('SimulatePoseApplyPushButton').enabled = True
